@@ -6,7 +6,7 @@ use tracing::{debug, trace};
 
 use super::Connection;
 use crate::{
-    FrameStats, TransportError,
+    FrameStats, PathId, TransportError,
     connection::PacketBuilder,
     frame::{Datagram, FrameStruct},
 };
@@ -27,6 +27,28 @@ impl Datagrams<'_> {
     ///
     /// Returns `Err` iff a `len`-byte datagram cannot currently be sent.
     pub fn send(&mut self, data: Bytes, drop: bool) -> Result<(), SendDatagramError> {
+        self.enqueue(data, drop, None)
+    }
+
+    /// Queue a datagram pinned to a specific path (bonding-scheduler steering).
+    ///
+    /// Behaves like [`send`](Self::send), but the datagram will only be transmitted on `path_id`.
+    /// Untargeted datagrams queued ahead of it for *other* paths are skipped rather than blocking.
+    pub fn send_on(
+        &mut self,
+        path_id: PathId,
+        data: Bytes,
+        drop: bool,
+    ) -> Result<(), SendDatagramError> {
+        self.enqueue(data, drop, Some(path_id))
+    }
+
+    fn enqueue(
+        &mut self,
+        data: Bytes,
+        drop: bool,
+        target: Option<PathId>,
+    ) -> Result<(), SendDatagramError> {
         if self.conn.config.datagram_receive_buffer_size.is_none() {
             return Err(SendDatagramError::Disabled);
         }
@@ -50,7 +72,10 @@ impl Datagrams<'_> {
             return Err(SendDatagramError::Blocked(data));
         }
         self.conn.datagrams.outgoing_total += data.len();
-        self.conn.datagrams.outgoing.push_back(Datagram { data });
+        self.conn.datagrams.outgoing.push_back(OutgoingDatagram {
+            datagram: Datagram { data },
+            target,
+        });
         Ok(())
     }
 
@@ -99,13 +124,20 @@ impl Datagrams<'_> {
     }
 }
 
+/// A queued outgoing datagram, optionally pinned to a specific path for bonding-scheduler steering.
+pub(super) struct OutgoingDatagram {
+    datagram: Datagram,
+    /// `Some(path)` => may only be sent on that path; `None` => any path the transmit loop builds.
+    target: Option<PathId>,
+}
+
 #[derive(Default)]
 pub(super) struct DatagramState {
     /// Number of bytes of datagrams that have been received by the local transport but not
     /// delivered to the application
     pub(super) recv_buffered: usize,
     pub(super) incoming: VecDeque<Datagram>,
-    pub(super) outgoing: VecDeque<Datagram>,
+    pub(super) outgoing: VecDeque<OutgoingDatagram>,
     pub(super) outgoing_total: usize,
     pub(super) send_blocked: bool,
 }
@@ -145,8 +177,8 @@ impl DatagramState {
             let Some(prev) = self.outgoing.pop_front() else {
                 break;
             };
-            trace!(len = prev.data.len(), "dropping outgoing datagram");
-            self.outgoing_total -= prev.data.len();
+            trace!(len = prev.datagram.data.len(), "dropping outgoing datagram");
+            self.outgoing_total -= prev.datagram.data.len();
         }
     }
 
@@ -166,15 +198,15 @@ impl DatagramState {
     /// queued but can't send it.
     pub(super) fn drop_oversized(&mut self, max_payload: usize) -> bool {
         let mut dropped_any = false;
-        self.outgoing.retain(|datagram| {
-            let result = datagram.data.len() < max_payload;
+        self.outgoing.retain(|d| {
+            let result = d.datagram.data.len() < max_payload;
             if !result {
                 trace!(
                     "dropping {} byte datagram violating {} byte limit",
-                    datagram.data.len(),
+                    d.datagram.data.len(),
                     max_payload
                 );
-                self.outgoing_total -= datagram.data.len();
+                self.outgoing_total -= d.datagram.data.len();
                 dropped_any = true;
             }
             result
@@ -186,25 +218,41 @@ impl DatagramState {
     ///
     /// Returns whether a frame was written. At most `max_size` bytes will be written, including
     /// framing.
+    /// Attempt to write a datagram frame destined for `path_id` into `buf`.
+    ///
+    /// Writes the first queued datagram that is either untargeted or pinned to `path_id`,
+    /// skipping datagrams pinned to *other* paths. Returns whether a frame was written.
     pub(super) fn write<'a, 'b>(
         &mut self,
+        path_id: PathId,
         buf: &mut PacketBuilder<'a, 'b>,
         stat: &mut FrameStats,
     ) -> bool {
-        let Some(datagram) = self.outgoing.pop_front() else {
+        let Some(idx) = self
+            .outgoing
+            .iter()
+            .position(|d| d.target.is_none() || d.target == Some(path_id))
+        else {
             return false;
         };
 
-        if buf.frame_space_remaining() < datagram.size(true) {
-            // Future work: we could be more clever about cramming small datagrams into
-            // mostly-full packets when a larger one is queued first
-            self.outgoing.push_front(datagram);
+        if buf.frame_space_remaining() < self.outgoing[idx].datagram.size(true) {
+            // Doesn't fit in the remaining packet space; leave it queued.
+            // Future work: cram smaller queued datagrams into the remaining space.
             return false;
         }
 
-        self.outgoing_total -= datagram.data.len();
-        buf.write_frame(datagram, stat);
+        let out = self.outgoing.remove(idx).expect("index valid");
+        self.outgoing_total -= out.datagram.data.len();
+        buf.write_frame(out.datagram, stat);
         true
+    }
+
+    /// Whether a datagram sendable on `path_id` (untargeted or pinned to it) is queued and fits.
+    pub(super) fn has_sendable_on_path(&self, path_id: PathId, max_size: usize) -> bool {
+        self.outgoing.iter().any(|d| {
+            (d.target.is_none() || d.target == Some(path_id)) && d.datagram.size(true) <= max_size
+        })
     }
 
     pub(super) fn recv(&mut self) -> Option<Bytes> {
@@ -221,26 +269,35 @@ mod tests {
     #[test]
     fn make_space_for_accounts_for_new_datagram() {
         let mut state = DatagramState::default();
-        state.outgoing.push_back(Datagram {
-            data: Bytes::from_static(&[0; 7]),
+        state.outgoing.push_back(OutgoingDatagram {
+            datagram: Datagram {
+                data: Bytes::from_static(&[0; 7]),
+            },
+            target: None,
         });
-        state.outgoing.push_back(Datagram {
-            data: Bytes::from_static(&[0; 2]),
+        state.outgoing.push_back(OutgoingDatagram {
+            datagram: Datagram {
+                data: Bytes::from_static(&[0; 2]),
+            },
+            target: None,
         });
         state.outgoing_total = 9;
 
         state.make_space_for(4, 10);
 
         assert_eq!(state.outgoing.len(), 1);
-        assert_eq!(state.outgoing[0].data.len(), 2);
+        assert_eq!(state.outgoing[0].datagram.data.len(), 2);
         assert_eq!(state.outgoing_total, 2);
     }
 
     #[test]
     fn make_space_for_handles_overflowing_capacity_check() {
         let mut state = DatagramState::default();
-        state.outgoing.push_back(Datagram {
-            data: Bytes::from_static(&[0]),
+        state.outgoing.push_back(OutgoingDatagram {
+            datagram: Datagram {
+                data: Bytes::from_static(&[0]),
+            },
+            target: None,
         });
         state.outgoing_total = usize::MAX - 1;
 

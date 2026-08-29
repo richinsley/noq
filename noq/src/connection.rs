@@ -671,6 +671,30 @@ impl Connection {
         }
     }
 
+    /// Transmit `data` as an unreliable datagram pinned to a specific path (bonding steering).
+    ///
+    /// Like [`send_datagram()`], but the datagram will only be sent on `path_id`. Used by the
+    /// multipath bonding scheduler to place each media packet on a chosen link. Untargeted
+    /// datagrams and datagrams for other paths do not block each other.
+    ///
+    /// [`send_datagram()`]: Connection::send_datagram
+    pub fn send_datagram_on(&self, path_id: PathId, data: Bytes) -> Result<(), SendDatagramError> {
+        let conn = &mut *self.0.lock_and_wake("send_datagram_on");
+        if let Some(ref x) = conn.error {
+            return Err(SendDatagramError::ConnectionLost(x.clone()));
+        }
+        use proto::SendDatagramError::*;
+        match conn.inner.datagrams().send_on(path_id, data, true) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(match e {
+                Blocked(..) => unreachable!(),
+                UnsupportedByPeer => SendDatagramError::UnsupportedByPeer,
+                Disabled => SendDatagramError::Disabled,
+                TooLarge => SendDatagramError::TooLarge,
+            }),
+        }
+    }
+
     /// Transmit `data` as an unreliable, unordered application datagram
     ///
     /// Unlike [`send_datagram()`], this method will wait for buffer space during congestion
