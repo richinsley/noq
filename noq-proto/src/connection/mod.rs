@@ -6517,7 +6517,7 @@ impl Connection {
             && builder.frame_space_remaining() > Datagram::SIZE_BOUND
             && space_id == SpaceId::Data
         {
-            match self.datagrams.write(builder, stats) {
+            match self.datagrams.write(path_id, builder, stats) {
                 true => {
                     sent_datagrams = true;
                 }
@@ -6969,11 +6969,7 @@ impl Connection {
 
         // Stream control frames are checked in PacketSpace::can_send, only check data here.
         let other = self.streams.can_send_stream_data()
-            || self
-                .datagrams
-                .outgoing
-                .front()
-                .is_some_and(|x| x.size(true) <= max_size);
+            || self.datagrams.has_sendable_on_path(path_id, max_size);
 
         // All `false` fields are set in PacketSpace::can_send.
         SendableFrames {
