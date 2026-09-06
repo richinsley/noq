@@ -236,6 +236,10 @@ pub struct PathStats {
     /// (see `Connection::send_datagram_on`). Lets a multipath scheduler see per-path send-queue
     /// occupancy (e.g. to estimate delivery time as `queued / pacing_rate + rtt`).
     pub datagram_queue_bytes: u64,
+    /// Bytes currently in flight on this path (sent, not yet acknowledged or declared lost), as
+    /// tracked by congestion control. With `pacing_rate` this lets a multipath scheduler gate a
+    /// new or recovering path on evidence of delivery ("probe before trust").
+    pub bytes_in_flight: u64,
     /// Congestion events on the connection.
     pub congestion_events: u64,
     /// Spurious congestion events on the connection.
@@ -288,7 +292,7 @@ impl std::ops::Add<PathStats> for ConnectionStats {
 
     fn add(self, rhs: PathStats) -> Self::Output {
         // Be aware that Connection::stats() relies on the fact this function ignores the
-        // rtt, cwnd, pacing_rate, datagram_queue_bytes and current_mtu fields.
+        // rtt, cwnd, pacing_rate, datagram_queue_bytes, bytes_in_flight and current_mtu fields.
         let PathStats {
             rtt: _,
             udp_tx,
@@ -298,6 +302,7 @@ impl std::ops::Add<PathStats> for ConnectionStats {
             cwnd: _,
             pacing_rate: _,
             datagram_queue_bytes: _,
+            bytes_in_flight: _,
             congestion_events: _,
             spurious_congestion_events: _,
             lost_packets,
@@ -323,7 +328,7 @@ impl std::ops::Add<PathStats> for ConnectionStats {
 impl std::ops::AddAssign<PathStats> for ConnectionStats {
     fn add_assign(&mut self, rhs: PathStats) {
         // Be aware that Connection::stats() relies on the fact this function ignores the
-        // rtt, cwnd, pacing_rate, datagram_queue_bytes and current_mtu fields.
+        // rtt, cwnd, pacing_rate, datagram_queue_bytes, bytes_in_flight and current_mtu fields.
         let PathStats {
             rtt: _,
             udp_tx: path_udp_tx,
@@ -333,6 +338,7 @@ impl std::ops::AddAssign<PathStats> for ConnectionStats {
             cwnd: _,
             pacing_rate: _,
             datagram_queue_bytes: _,
+            bytes_in_flight: _,
             congestion_events: _,
             spurious_congestion_events: _,
             lost_packets: path_lost_packets,
