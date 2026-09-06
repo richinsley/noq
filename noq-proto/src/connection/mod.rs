@@ -2696,6 +2696,8 @@ impl Connection {
         let mut stats = self.path_stats.get(path_id).unwrap_or_default();
         stats.rtt = path.data.rtt.get();
         stats.cwnd = path.data.congestion.window();
+        stats.pacing_rate = path.data.congestion.metrics().pacing_rate;
+        stats.datagram_queue_bytes = self.datagrams.queued_bytes_on_path(path_id);
         stats.current_mtu = path.data.mtud.current_mtu();
         Some(stats)
     }

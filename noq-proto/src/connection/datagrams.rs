@@ -321,6 +321,15 @@ impl DatagramState {
         true
     }
 
+    /// Total bytes of queued datagrams pinned to `path_id` (send-queue occupancy for that path).
+    pub(super) fn queued_bytes_on_path(&self, path_id: PathId) -> u64 {
+        self.outgoing
+            .iter()
+            .filter(|d| d.target == Some(path_id))
+            .map(|d| d.datagram.data.len() as u64)
+            .sum()
+    }
+
     /// Whether a datagram sendable on `path_id` (untargeted or pinned to it) is queued and fits.
     pub(super) fn has_sendable_on_path(&self, path_id: PathId, max_size: usize) -> bool {
         self.outgoing.iter().any(|d| {
