@@ -228,6 +228,14 @@ pub struct PathStats {
     pub frame_rx: FrameStats,
     /// Current congestion window of the connection.
     pub cwnd: u64,
+    /// Current pacing rate of this path's congestion controller (bytes/s), if it reports one
+    /// (e.g. BBR). This is the controller's live model of the path's deliverable rate, which a
+    /// multipath application scheduler can weight paths by.
+    pub pacing_rate: Option<u64>,
+    /// Bytes of application datagrams queued for transmission that are pinned to this path
+    /// (see `Connection::send_datagram_on`). Lets a multipath scheduler see per-path send-queue
+    /// occupancy (e.g. to estimate delivery time as `queued / pacing_rate + rtt`).
+    pub datagram_queue_bytes: u64,
     /// Congestion events on the connection.
     pub congestion_events: u64,
     /// Spurious congestion events on the connection.
@@ -280,7 +288,7 @@ impl std::ops::Add<PathStats> for ConnectionStats {
 
     fn add(self, rhs: PathStats) -> Self::Output {
         // Be aware that Connection::stats() relies on the fact this function ignores the
-        // rtt, cwnd and current_mtu fields.
+        // rtt, cwnd, pacing_rate, datagram_queue_bytes and current_mtu fields.
         let PathStats {
             rtt: _,
             udp_tx,
@@ -288,6 +296,8 @@ impl std::ops::Add<PathStats> for ConnectionStats {
             frame_tx,
             frame_rx,
             cwnd: _,
+            pacing_rate: _,
+            datagram_queue_bytes: _,
             congestion_events: _,
             spurious_congestion_events: _,
             lost_packets,
@@ -313,7 +323,7 @@ impl std::ops::Add<PathStats> for ConnectionStats {
 impl std::ops::AddAssign<PathStats> for ConnectionStats {
     fn add_assign(&mut self, rhs: PathStats) {
         // Be aware that Connection::stats() relies on the fact this function ignores the
-        // rtt, cwnd and current_mtu fields.
+        // rtt, cwnd, pacing_rate, datagram_queue_bytes and current_mtu fields.
         let PathStats {
             rtt: _,
             udp_tx: path_udp_tx,
@@ -321,6 +331,8 @@ impl std::ops::AddAssign<PathStats> for ConnectionStats {
             frame_tx: path_frame_tx,
             frame_rx: path_frame_rx,
             cwnd: _,
+            pacing_rate: _,
+            datagram_queue_bytes: _,
             congestion_events: _,
             spurious_congestion_events: _,
             lost_packets: path_lost_packets,
