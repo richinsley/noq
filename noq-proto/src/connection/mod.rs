@@ -2698,6 +2698,7 @@ impl Connection {
         stats.cwnd = path.data.congestion.window();
         stats.pacing_rate = path.data.congestion.metrics().pacing_rate;
         stats.datagram_queue_bytes = self.datagrams.queued_bytes_on_path(path_id);
+        stats.bytes_in_flight = path.data.in_flight.bytes;
         stats.current_mtu = path.data.mtud.current_mtu();
         Some(stats)
     }
