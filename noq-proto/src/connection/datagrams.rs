@@ -43,6 +43,18 @@ impl Datagrams<'_> {
         self.enqueue(data, drop, Some(path_id))
     }
 
+    /// Drop every queued datagram pinned to `path_id`; returns how many were dropped.
+    ///
+    /// For a bonding scheduler that has decided a path is no longer viable: what is already
+    /// queued for it would arrive stale and only load the struggling link further.
+    pub fn drop_on(&mut self, path_id: PathId) -> usize {
+        let st = &mut self.conn.datagrams;
+        let before = st.outgoing.len();
+        st.outgoing.retain(|d| d.target != Some(path_id));
+        st.outgoing_total = st.outgoing.iter().map(|d| d.datagram.data.len()).sum();
+        before - st.outgoing.len()
+    }
+
     fn enqueue(
         &mut self,
         data: Bytes,
