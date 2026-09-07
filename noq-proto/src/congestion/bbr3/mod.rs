@@ -335,6 +335,9 @@ pub struct Bbr3 {
     /// equivalent to BBR.PacingMarginPercent: The static discount factor of 1% used to scale
     /// BBR.bw to produce C.pacing_rate.
     pacing_margin_percent: f64,
+    /// equivalent to BBR.LossThresh: the per-round-trip loss rate above which in-flight data is
+    /// judged too high (default 2%; see [`Bbr3Config::loss_thresh`]).
+    loss_thresh: f64,
     /// equivalent to BBR.cwnd_gain: The dynamic gain factor used to scale the estimated BDP to
     /// produce a congestion window (C.cwnd).
     cwnd_gain: f64,
@@ -602,6 +605,7 @@ impl Bbr3 {
         let pacing_margin_percent = config
             .pacing_margin_percent
             .unwrap_or(PACING_MARGIN_PERCENT);
+        let loss_thresh = config.loss_thresh.unwrap_or(LOSS_THRESH);
         let default_cwnd_gain = config.default_cwnd_gain.unwrap_or(DEFAULT_CWND_GAIN);
         let probe_bw_up_cwnd_gain = config
             .probe_bw_up_cwnd_gain
@@ -628,6 +632,7 @@ impl Bbr3 {
             probe_bw_up_pacing_gain,
             drain_pacing_gain,
             pacing_margin_percent,
+            loss_thresh,
             cwnd_gain: default_cwnd_gain,
             default_cwnd_gain,
             probe_rng,
@@ -1537,7 +1542,7 @@ impl Bbr3 {
     /// equivalent to IsInflightTooHigh <https://www.ietf.org/archive/id/draft-ietf-ccwg-bbr-05.html#section-5.5.10.2-1>
     fn is_inflight_too_high(&self) -> bool {
         if let Some(rate_sample) = self.rs {
-            return rate_sample.lost as f64 > rate_sample.tx_in_flight as f64 * LOSS_THRESH;
+            return rate_sample.lost as f64 > rate_sample.tx_in_flight as f64 * self.loss_thresh;
         }
         false
     }
@@ -1550,7 +1555,7 @@ impl Bbr3 {
         };
         let inflight_prev = rate_sample.tx_in_flight.saturating_sub(packet_size) as f64;
         let lost_prev = rate_sample.lost.saturating_sub(packet_size) as f64;
-        let lost_prefix = (LOSS_THRESH * inflight_prev - lost_prev) / (1.0 - LOSS_THRESH);
+        let lost_prefix = (self.loss_thresh * inflight_prev - lost_prev) / (1.0 - self.loss_thresh);
         (inflight_prev + lost_prefix) as u64
     }
 
@@ -2010,9 +2015,20 @@ pub struct Bbr3Config {
     drain_pacing_gain: Option<f64>,
     pacing_margin_percent: Option<f64>,
     default_cwnd_gain: Option<f64>,
+    loss_thresh: Option<f64>,
 }
 
 impl Bbr3Config {
+    /// Per-round-trip packet loss rate above which BBR judges the in-flight volume too high and
+    /// backs off (`BBR.LossThresh`, default 0.02). Links with random, non-congestive loss above
+    /// that — cellular under marginal signal, radio links — make the default back off on every
+    /// bandwidth probe and throughput collapses over time; a higher threshold (e.g. 0.1) trades
+    /// congestion responsiveness for tolerance of such loss. Clamped to (0, 1).
+    pub fn loss_thresh(&mut self, value: f64) -> &mut Self {
+        self.loss_thresh = Some(value.clamp(1e-6, 0.999));
+        self
+    }
+
     /// Default limit on the amount of outstanding data in bytes.
     ///
     /// Recommended value: `min(10 * max_datagram_size, max(2 * max_datagram_size, 14720))`
@@ -2038,6 +2054,7 @@ impl Default for Bbr3Config {
             drain_pacing_gain: None,
             pacing_margin_percent: None,
             default_cwnd_gain: None,
+            loss_thresh: None,
         }
     }
 }
@@ -2219,6 +2236,7 @@ mod test {
             drain_pacing_gain: None,
             pacing_margin_percent: None,
             default_cwnd_gain: None,
+            loss_thresh: None,
         };
         let mut bbr3 = Bbr3::new(Arc::new(config), 2500);
         bbr3.pick_probe_wait();

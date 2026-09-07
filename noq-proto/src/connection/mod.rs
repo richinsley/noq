@@ -2206,7 +2206,6 @@ impl Connection {
         packet_size: usize,
         connection_close_pending: bool,
     ) -> SendableFrames {
-        let ack_carriers = self.ack_carrier_paths();
         let space = &mut self.spaces[space_id];
         let space_has_crypto = self.crypto_state.has_keys(space_id.encryption_level());
 
@@ -2219,7 +2218,7 @@ impl Connection {
             return SendableFrames::empty();
         }
 
-        let mut can_send = space.can_send(path_id, &self.streams, |p| ack_carriers.contains(&p));
+        let mut can_send = space.can_send(path_id, &self.streams);
 
         // Check for 1RTT space.
         if space_id == SpaceId::Data {
@@ -6101,7 +6100,6 @@ impl Connection {
         let is_multipath_negotiated = self.is_multipath_negotiated();
         let space_has_keys = self.crypto_state.has_keys(space_id.encryption_level());
         let is_0rtt = space_id == SpaceId::Data && !space_has_keys;
-        let ack_carriers = self.ack_carrier_paths();
         let stats = &mut self.path_stats.get_mut(path_id).frame_tx;
         let space = &mut self.spaces[space_id];
         let path = &mut self.paths.get_mut(&path_id).expect("known path").data;
@@ -6139,19 +6137,11 @@ impl Connection {
         }
 
         // ACK
-        //
-        // A path's acknowledgements are sent on that path whenever it can carry them, and only
-        // piggybacked onto another path's packet when it cannot (not yet validated, abandoned,
-        // no CIDs). Sending path B's PATH_ACKs on path A ties B's loss recovery and congestion
-        // feedback to A's fate: if A degrades, B's RTT and delivery-rate estimates inflate with
-        // A's queue even though B itself is healthy.
         if !scheduling_info.is_abandoned && scheduling_info.may_send_data {
             for path_id in space
                 .number_spaces
                 .iter_mut()
-                .filter(|(pid, pns)| {
-                    pns.pending_acks.can_send() && (**pid == path_id || !ack_carriers.contains(pid))
-                })
+                .filter(|(_, pns)| pns.pending_acks.can_send())
                 .map(|(&path_id, _)| path_id)
                 .collect::<Vec<_>>()
             {
@@ -6969,21 +6959,6 @@ impl Connection {
     ///
     /// See also [`PacketSpace::can_send`] which keeps track of all other frame types that
     /// may need to be sent.
-    /// Paths that can currently carry their own acknowledgements: known CIDs, not abandoned and
-    /// validated. Acks for these paths are sent on the path itself rather than piggybacked on
-    /// whichever path happens to transmit first (see the ACK section of `populate_packet`).
-    fn ack_carrier_paths(&self) -> Vec<PathId> {
-        self.paths
-            .iter()
-            .filter(|(path_id, path)| {
-                self.remote_cids.contains_key(path_id)
-                    && !self.abandoned_paths.contains(path_id)
-                    && path.data.validated
-            })
-            .map(|(&path_id, _)| path_id)
-            .collect()
-    }
-
     fn can_send_1rtt(&self, path_id: PathId, max_size: usize) -> SendableFrames {
         let network_path = self.path_data(path_id).network_path;
         let space_specific = self
