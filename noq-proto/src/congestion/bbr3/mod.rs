@@ -531,6 +531,12 @@ pub struct Bbr3 {
     loss_round_delivered: u64,
     /// equivalent to BBR.loss_in_round: flag set to true when loss occurs during the round
     loss_in_round: bool,
+    /// `C.lost` at the start of the current loss round (for the round loss-rate gate).
+    loss_round_lost_base: u64,
+    /// When set (via [`Bbr3Config::loss_thresh`]), the short-term loss model (`bw_shortterm` /
+    /// `inflight_shortterm`) only adapts down for rounds whose loss rate exceeds this; rounds
+    /// with less loss are treated as non-congestive. `None` = draft behaviour (any loss adapts).
+    shortterm_loss_gate: Option<f64>,
     /// equivalent to BBR.loss_events_in_round: count of discontiguous loss events
     /// observed in the current round trip, used by the STARTUP high-loss exit
     /// (BBRStartupFullLossCnt criterion). Reset at each loss-round boundary.
@@ -697,6 +703,8 @@ impl Bbr3 {
             reno_rounds_bound: RENO_ROUNDS_BOUNDS[0],
             loss_round_delivered: 0,
             loss_in_round: false,
+            loss_round_lost_base: 0,
+            shortterm_loss_gate: config.loss_thresh,
             probe_rtt_done_stamp: None,
             probe_rtt_round_done: false,
             prior_cwnd: 0,
@@ -748,8 +756,27 @@ impl Bbr3 {
         if !self.loss_round_start {
             return;
         }
-        self.adapt_lower_bounds_from_congestion();
+        if self.round_loss_is_congestive() {
+            self.adapt_lower_bounds_from_congestion();
+        }
         self.loss_in_round = false;
+    }
+
+    /// Whether this loss round's loss should drive the short-term model. Draft behaviour: any
+    /// loss. With a configured loss threshold, only a round whose loss rate (lost bytes over
+    /// lost + delivered bytes since the round's first loss) exceeds it — sustained random loss
+    /// below the threshold would otherwise cut `bw_shortterm` by BETA every round, bounded only
+    /// by the latest delivery sample, and pacing spirals down on a link that is not congested.
+    fn round_loss_is_congestive(&self) -> bool {
+        let Some(thresh) = self.shortterm_loss_gate else {
+            return true;
+        };
+        if !self.loss_in_round {
+            return true; // nothing to adapt anyway; keep the draft's control flow
+        }
+        let lost = self.lost.saturating_sub(self.loss_round_lost_base) as f64;
+        let delivered = self.delivered.saturating_sub(self.loss_round_delivered) as f64;
+        lost > (lost + delivered) * thresh
     }
 
     /// equivalent to BBRUpdateMaxBw <https://www.ietf.org/archive/id/draft-ietf-ccwg-bbr-05.html#section-5.5.5>
@@ -1518,6 +1545,7 @@ impl Bbr3 {
     fn note_loss(&mut self, space: SpaceKind, packet_number: u64) {
         if !self.loss_in_round {
             self.loss_round_delivered = self.delivered;
+            self.loss_round_lost_base = self.lost;
         }
         self.save_state_upon_loss();
         self.loss_in_round = true;
@@ -2024,6 +2052,11 @@ impl Bbr3Config {
     /// that — cellular under marginal signal, radio links — make the default back off on every
     /// bandwidth probe and throughput collapses over time; a higher threshold (e.g. 0.1) trades
     /// congestion responsiveness for tolerance of such loss. Clamped to (0, 1).
+    ///
+    /// Setting this also gates the short-term loss model (`bw_lo` / `inflight_lo`): a loss
+    /// round only adapts those bounds down when its loss rate exceeds the threshold. (The draft
+    /// adapts on any loss, which under sustained random loss cuts the bandwidth model by BETA
+    /// every round.) Leave unset for draft behaviour.
     pub fn loss_thresh(&mut self, value: f64) -> &mut Self {
         self.loss_thresh = Some(value.clamp(1e-6, 0.999));
         self
