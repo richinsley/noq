@@ -747,6 +747,16 @@ impl Connection {
         }
     }
 
+    /// Drop every queued datagram pinned to `path_id` via [`send_datagram_on()`]; returns the
+    /// number dropped. For a bonding scheduler that has pruned a path: what is already queued
+    /// for it would arrive stale and only load the struggling link further.
+    ///
+    /// [`send_datagram_on()`]: Connection::send_datagram_on
+    pub fn drop_datagrams_on(&self, path_id: PathId) -> usize {
+        let conn = &mut *self.0.lock_and_wake("drop_datagrams_on");
+        conn.inner.datagrams().drop_on(path_id)
+    }
+
     /// Transmit `data` as an unreliable, unordered application datagram
     ///
     /// Unlike [`send_datagram()`], this method will wait for buffer space during congestion
