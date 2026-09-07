@@ -461,6 +461,12 @@ pub struct Bbr3 {
     /// equivalent to BBR.full_bw_reached: A boolean that records whether BBR estimates that it has
     /// ever fully utilized its available bandwidth over the lifetime of the connection.
     full_bw_reached: bool,
+    /// Whether the pacing rate has been re-derived from a measured RTT. At construction no SRTT
+    /// exists, so the initial pacing rate is InitialCwnd / 1 ms (~266 Mbps for a 12 kB window)
+    /// and, until startup exits, BBRSetPacingRate only ever raises it. A path that stays
+    /// app-limited never exits startup and would therefore never be paced at all (Linux BBR:
+    /// `has_seen_rtt` / `bbr_init_pacing_rate_from_rtt`).
+    has_seen_rtt: bool,
     /// equivalent to BBR.full_bw_now: A boolean that records whether BBR estimates that it has
     /// fully utilized its available bandwidth since it most recetly started looking.
     full_bw_now: bool,
@@ -670,6 +676,7 @@ impl Bbr3 {
             extra_acked_delivered: 0,
             extra_acked_filter: MaxFilter::new(EXTRA_ACKED_FILTER_LEN as u64),
             full_bw_reached: false,
+            has_seen_rtt: false,
             full_bw_now: false,
             full_bw: 0.0,
             full_bw_count: 0,
@@ -1696,6 +1703,15 @@ impl Bbr3 {
         _app_limited: bool,
         rtt: &RttEstimator,
     ) {
+        if !self.has_seen_rtt && rtt.has_sample() {
+            // equivalent to BBRInitPacingRate with a real SRTT: the 1 ms placeholder used at
+            // construction is replaced by InitialCwnd / SRTT once the path has an RTT sample
+            self.has_seen_rtt = true;
+            let srtt = rtt.get().as_secs_f64().max(0.001);
+            let nominal_bandwidth = self.initial_cwnd as f64 / srtt;
+            self.pacing_rate = self.startup_pacing_gain * nominal_bandwidth;
+            self.set_send_quantum();
+        }
         self.check_recovery_done(sent);
         self.delivered += bytes;
         self.delivered_time = Some(now);
