@@ -2687,6 +2687,7 @@ impl Connection {
         let path = self.paths.get(&path_id)?;
         let mut stats = self.path_stats.get(path_id).unwrap_or_default();
         stats.rtt = path.data.rtt.get();
+        stats.latest_rtt = path.data.rtt.latest();
         stats.cwnd = path.data.congestion.window();
         stats.pacing_rate = path.data.congestion.metrics().pacing_rate;
         stats.datagram_queue_bytes = self.datagrams.queued_bytes_on_path(path_id);

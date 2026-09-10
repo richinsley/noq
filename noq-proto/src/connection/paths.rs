@@ -803,6 +803,12 @@ impl RttEstimator {
         self.smoothed.is_some()
     }
 
+    /// The most recent RTT sample. After a path was stalled (its smoothed estimate then reflects
+    /// queueing that is over), the latest sample is the first sign the path recovered.
+    pub fn latest(&self) -> Duration {
+        self.latest
+    }
+
     /// The current best RTT estimation.
     pub fn get(&self) -> Duration {
         self.smoothed.unwrap_or(self.latest)

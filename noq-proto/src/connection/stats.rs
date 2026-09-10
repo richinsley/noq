@@ -218,6 +218,9 @@ impl std::fmt::Debug for FrameStats {
 pub struct PathStats {
     /// Current best estimate of this connection's latency (round-trip-time).
     pub rtt: Duration,
+    /// The most recent RTT sample on this path (the smoothed `rtt` lags it by design; a path
+    /// coming back from a stall shows it here first).
+    pub latest_rtt: Duration,
     /// Statistics about datagrams and bytes sent on this path.
     pub udp_tx: UdpStats,
     /// Statistics about datagrams and bytes received on this path.
@@ -292,9 +295,11 @@ impl std::ops::Add<PathStats> for ConnectionStats {
 
     fn add(self, rhs: PathStats) -> Self::Output {
         // Be aware that Connection::stats() relies on the fact this function ignores the
-        // rtt, cwnd, pacing_rate, datagram_queue_bytes, bytes_in_flight and current_mtu fields.
+        // rtt, latest_rtt, cwnd, pacing_rate, datagram_queue_bytes, bytes_in_flight and
+        // current_mtu fields.
         let PathStats {
             rtt: _,
+            latest_rtt: _,
             udp_tx,
             udp_rx,
             frame_tx,
@@ -328,9 +333,11 @@ impl std::ops::Add<PathStats> for ConnectionStats {
 impl std::ops::AddAssign<PathStats> for ConnectionStats {
     fn add_assign(&mut self, rhs: PathStats) {
         // Be aware that Connection::stats() relies on the fact this function ignores the
-        // rtt, cwnd, pacing_rate, datagram_queue_bytes, bytes_in_flight and current_mtu fields.
+        // rtt, latest_rtt, cwnd, pacing_rate, datagram_queue_bytes, bytes_in_flight and
+        // current_mtu fields.
         let PathStats {
             rtt: _,
+            latest_rtt: _,
             udp_tx: path_udp_tx,
             udp_rx: path_udp_rx,
             frame_tx: path_frame_tx,
